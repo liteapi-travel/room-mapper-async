@@ -1,116 +1,74 @@
 # Room Mapper Async Cloud Function
 
-A Google Cloud Function that processes hotel room mappings asynchronously using OpenAI's GPT-4 model. This function matches supplier rate names to reference room names for hotels.
+A Google Cloud Function that processes room mapping requests asynchronously using Redis for job storage and OpenAI GPT-4 for intelligent room name matching.
 
-## Overview
+## Features
 
-This cloud function:
-- Processes batches of unmapped hotel rooms
-- Uses OpenAI GPT-4 to intelligently match supplier rate names to reference room names
-- Stores mappings in Redis for persistence
-- Implements rate limiting and retry logic for API calls
-- Supports concurrent processing with worker pools
+- **Asynchronous Processing**: Uses Redis to store batch jobs and process them asynchronously
+- **Intelligent Room Mapping**: Leverages OpenAI GPT-4 to match supplier rate names to reference room names
+- **Idempotency**: Prevents duplicate processing using Redis-based idempotency keys
+- **Rate Limiting**: Implements rate limiting for OpenAI API calls
+- **Error Handling**: Robust error handling with retry logic
+- **Metrics**: Tracks success rates and response times
 
 ## Architecture
 
-- **Trigger**: Cloud Events (Pub/Sub messages)
-- **Processing**: Concurrent processing with rate limiting
-- **Storage**: Redis for mapping persistence
-- **AI**: OpenAI GPT-4 for intelligent room matching
-- **Monitoring**: Comprehensive logging and metrics
-
-## Prerequisites
-
-- Google Cloud Platform account
-- Redis instance (Cloud Memorystore or external)
-- OpenAI API key
-- Go 1.21+
+1. **Pub/Sub Trigger**: Function is triggered by Pub/Sub messages
+2. **Redis Storage**: Batch data is stored in Redis with a `batchKey`
+3. **Processing**: Function retrieves data from Redis and processes each hotel
+4. **OpenAI Integration**: Uses GPT-4 to map supplier rate names to reference rooms
+5. **Results Storage**: Mappings are stored back in Redis for each hotel
 
 ## Environment Variables
 
-The following environment variables must be set:
+Create a `.env` file with the following variables:
 
 ```bash
-OPENAI_API_KEY=your_openai_api_key
-REDIS_HOST=your_redis_host
-REDIS_PORT=your_redis_port
-REDIS_USER=your_redis_username
-REDIS_PASSWORD=your_redis_password
+OPENAI_API_KEY=your_openai_api_key_here
+REDIS_HOST=localhost
+REDIS_PORT=6379
 ```
 
-## Local Development
+## Local Testing
 
-1. **Install dependencies**:
+### Prerequisites
+
+1. **Redis**: Start Redis locally
    ```bash
-   go mod tidy
+   docker run -d -p 6379:6379 redis:alpine
    ```
 
-2. **Set environment variables**:
+2. **Environment**: Create `.env` file with required credentials
+
+### Test the Function
+
+1. **Setup test data in Redis**:
    ```bash
-   export OPENAI_API_KEY="your_key"
-   export REDIS_HOST="localhost"
-   export REDIS_PORT="6379"
-   export REDIS_USER=""
-   export REDIS_PASSWORD=""
+   ./test-local.sh
    ```
 
-3. **Run locally** (requires Functions Framework):
+2. **Deploy and test with Cloud Function**:
    ```bash
-   go run .
+   # Deploy to Google Cloud
+   gcloud functions deploy room-mapping-async2 \
+     --gen2 \
+     --runtime=go121 \
+     --region=us-east1 \
+     --source=. \
+     --entry-point=roomMapping \
+     --trigger-topic=room-mapping-topic \
+     --project=nuitee-lite-api \
+     --set-env-vars=OPENAI_API_KEY=your_key,REDIS_HOST=your_redis_host,REDIS_PORT=6379
    ```
 
-## Deployment
-
-### Option 1: Google Cloud Functions (2nd gen)
-
-```bash
-gcloud functions deploy room-mapper-async \
-  --gen2 \
-  --runtime=go121 \
-  --region=us-central1 \
-  --source=. \
-  --entry-point=roomMapping \
-  --trigger-topic=room-mapping-topic \
-  --set-env-vars=OPENAI_API_KEY=your_key,REDIS_HOST=your_host,REDIS_PORT=6379,REDIS_USER=your_user,REDIS_PASSWORD=your_password \
-  --memory=2GB \
-  --timeout=540s
-```
-
-### Option 2: Using Docker
-
-1. **Build the container**:
+3. **Test with the cloud function**:
    ```bash
-   docker build -t room-mapper-async .
+   ./test-function.sh
    ```
 
-2. **Run locally**:
-   ```bash
-   docker run -p 8080:8080 \
-     -e OPENAI_API_KEY=your_key \
-     -e REDIS_HOST=your_host \
-     -e REDIS_PORT=6379 \
-     -e REDIS_USER=your_user \
-     -e REDIS_PASSWORD=your_password \
-     room-mapper-async
-   ```
+### Test Data Structure
 
-## Input Format
-
-The function expects Pub/Sub messages with the following structure:
-
-```json
-{
-  "message": {
-    "data": "base64_encoded_data",
-    "attributes": {
-      "batchKey": "unmapped_rooms_batch_123",
-      "processingId": "unique_processing_id"
-    }
-  }
-}
-```
-
-The `data` field should contain a JSON array of `UnmappedRoom` objects:
+The function expects data in this format:
 
 ```json
 [
@@ -120,6 +78,10 @@ The `data` field should contain a JSON array of `UnmappedRoom` objects:
       {
         "id": 1,
         "name": "Standard Double Room"
+      },
+      {
+        "id": 2,
+        "name": "Deluxe Room"
       }
     ],
     "supplierRateNames": [
@@ -130,45 +92,42 @@ The `data` field should contain a JSON array of `UnmappedRoom` objects:
 ]
 ```
 
-## Output
+## Redis Keys
 
-The function stores mappings in Redis with the key pattern: `room_mapping:{hotelId}`
+- **Batch Data**: `{batchKey}` - Contains the JSON array of hotels to process
+- **Idempotency**: `{batchKey}:{processingId}:processed` - Prevents duplicate processing
+- **Mappings**: `room_mapping:{hotelId}` - Stores the final room mappings for each hotel
 
-Each mapping contains:
-- Supplier rate name (normalized)
-- Reference room name
-- Reference room ID
+## Development
 
-## Error Handling
+### Running Locally
 
-- **Idempotency**: Uses Redis to prevent duplicate processing
-- **Retry Logic**: Implements exponential backoff for OpenAI API calls
-- **Rate Limiting**: Prevents API quota exhaustion
-- **Graceful Degradation**: Continues processing even if some hotels fail
+1. Start Redis
+2. Set up environment variables
+3. Use the test scripts to simulate the function
+
+### Deployment
+
+```bash
+gcloud functions deploy room-mapping-async2 \
+  --gen2 \
+  --runtime=go121 \
+  --region=us-east1 \
+  --source=. \
+  --entry-point=roomMapping \
+  --trigger-topic=room-mapping-topic \
+  --project=nuitee-lite-api \
+  --set-env-vars=OPENAI_API_KEY=your_key,REDIS_HOST=your_redis_host,REDIS_PORT=6379
+```
 
 ## Monitoring
 
-The function logs:
-- Processing metrics (success rate, response times)
-- Error details with context
-- Performance statistics
-- API call timing
+Check function logs:
+```bash
+gcloud functions logs read room-mapping-async2 --region=us-east1 --project=nuitee-lite-api --limit=50
+```
 
-## Performance
+## Testing Scripts
 
-- **Concurrency**: Up to 10 concurrent hotel processing
-- **Rate Limiting**: 10 requests/second to OpenAI API
-- **Timeout**: Dynamic timeout based on prompt length (60s base + prompt length factor)
-- **Memory**: Recommended 2GB for optimal performance
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## License
-
-[Add your license information here] 
+- `test-function.sh`: Tests the deployed cloud function
+- `test-local.sh`: Sets up test data in Redis for local testing 
